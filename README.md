@@ -28,6 +28,44 @@
 - 반환된 DTO 객체는 핸들러로 컨트롤 할 수 있습니다.
 - Slf4j 로그로 DTO 객체를 toString형태로 출력하는 기본 핸들러가 포함되어 있습니다.
 - 로그 DTO에 대한 추가 조치가 필요한 경우 핸들러를 상속받아 구현하세요.
+```java
+ex : 
+public class HttpRequestLogCustomHandler implements HttpRequestLogHandler {
+
+    private final JwtProvider jwtProvider;
+    private final HttpRequestLogRepository httpRequestLogRepository;
+    
+    public HttpRequestLogCustomHandler(JwtProvider jwtProvider, HttpRequestLogRepository httpRequestLogRepository) {
+        this.jwtProvider = jwtProvider;
+        this.httpRequestLogRepository = httpRequestLogRepository;
+    }
+
+    @Override
+    public void handle(HttpRequestLog httpRequestLog) {
+        
+        Long currentUserSeq = jwtProvider.getCurrentUser()
+                .map(Users::getSeq)
+                .orElse(null);
+
+        try{
+            httpRequestLogRepository.save(
+                    HttpRequest.builder()
+                            .createdDateTime(LocalDateTime.now())
+                            .requesterSeq(currentUserSeq)
+                            .requesterIp(httpRequestLog.requesterIp())
+                            .request(httpRequestLog.request())
+                            .response(httpRequestLog.response())
+                            .build()
+            );
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+
+    }
+}
+```
+
+
 - 요청자 IP는 요청 헤더에 담긴 X-Forwarded-For값에서 추출합니다. 
 ## ✨ Installation 방법
 

@@ -26,6 +26,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import static com.ywluv.easy_http_log_aspect.utils.HttpLoggingUtils.getClientIp;
+
 @Aspect
 @Order(1)
 @Slf4j
@@ -86,9 +88,26 @@ public class HttpLoggingAspect {
             throw ex; // 예외를 다시 던져서 컨트롤러나 상위 로직이 처리하도록
         } finally {
             // --- After  역할 ---
-            String requestString = request != null ?
-                    String.format("%s %s?%s, Params: %s", request.getMethod(), request.getRequestURI(), request.getQueryString(), params(joinPoint)) :
-                    "N/A";
+            String requestString;
+            if (request != null) {
+                Map<String, Object> paramMap = params(joinPoint);
+                String paramsJson;
+                try {
+                    paramsJson = objectMapper.writeValueAsString(paramMap);
+                } catch (Exception e) {
+                    paramsJson = paramMap.toString(); // 직렬화 실패 시 fallback
+                }
+
+                requestString = String.format(
+                        "%s %s?%s, Params: %s",
+                        request.getMethod(),
+                        request.getRequestURI(),
+                        request.getQueryString(),
+                        paramsJson
+                );
+            } else {
+                requestString = "N/A";
+            }
 
             String responseString;
             if (exception != null) {
@@ -113,6 +132,8 @@ public class HttpLoggingAspect {
             );
         }
     }
+
+
 
 
     private Map<String, Object> params(JoinPoint joinPoint) {
@@ -144,13 +165,4 @@ public class HttpLoggingAspect {
     }
 
 
-    private String getClientIp(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (ip == null) {
-            ip = request.getRemoteAddr();
-        }
-        log.debug("> Result : IP Address : " + ip);
-
-        return ip;
-    }
 }
