@@ -3,6 +3,7 @@ package com.ywluv.easy_http_log_aspect;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ywluv.easy_http_log_aspect.annotation.LoggableApi;
 import com.ywluv.easy_http_log_aspect.dto.HttpRequestLog;
 import com.ywluv.easy_http_log_aspect.handler.HttpRequestLogHandler;
@@ -20,11 +21,10 @@ import org.springframework.core.annotation.Order;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 import static com.ywluv.easy_http_log_aspect.utils.HttpLoggingUtils.getClientIp;
 
@@ -55,9 +55,20 @@ public class HttpLoggingAspect {
         // 애노테이션 체크
         LoggableApi methodAnno = method.getAnnotation(LoggableApi.class);
         LoggableApi classAnno = clazz.getAnnotation(LoggableApi.class);
+        // --- 로그 가능 여부 체크 (메서드 우선) ---
+        boolean loggable = (methodAnno == null || methodAnno.value()) && (classAnno == null || classAnno.value());
+        if (!loggable) {
+            return joinPoint.proceed(); // false면 원래 로직 실행
+        }
 
-        if ((methodAnno != null && !methodAnno.value()) || (classAnno != null && !classAnno.value())) {
-            return joinPoint.proceed(); // false면 그냥 원래 로직 실행
+
+
+        Set<String> excludeColumns = new HashSet<>();
+        if (methodAnno != null) {
+            // 메서드 어노테이션이 있으면 클래스 컬럼 무시
+            excludeColumns.addAll(Arrays.asList(methodAnno.excludeColumns()));
+        } else if (classAnno != null) {
+            excludeColumns.addAll(Arrays.asList(classAnno.excludeColumns()));
         }
 
         ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
@@ -90,20 +101,39 @@ public class HttpLoggingAspect {
             // --- After  역할 ---
             String requestString;
             if (request != null) {
-                Map<String, Object> paramMap = params(joinPoint);
-                String paramsJson;
-                try {
-                    paramsJson = objectMapper.writeValueAsString(paramMap);
-                } catch (Exception e) {
-                    paramsJson = paramMap.toString(); // 직렬화 실패 시 fallback
+
+                //민감 정보가 담긴 쿼리스트링도 삭제
+                String originalQuery = request.getQueryString();
+                String maskedQueryString = "";
+                if (originalQuery != null && !originalQuery.isEmpty()) {
+                    // 쿼리스트링 분리
+                    List<String> parts = Arrays.asList(originalQuery.split("&"));
+
+                    // 민감 컬럼 마스킹
+                    List<String> maskedParts = parts.stream()
+                            .map(p -> {
+                                String[] kv = p.split("=", 2);
+                                String key = kv[0];
+                                String value = kv.length > 1 ? kv[1] : "";
+                                if (excludeColumns.contains(key)) {
+                                    value = "***"; // 마스킹 처리
+                                }
+                                return key + "=" + value;
+                            })
+                            .toList();
+
+                    maskedQueryString = String.join("&", maskedParts);
                 }
+
+                //body request
+                String bodyString = maskAndSerializeParams(params(joinPoint), excludeColumns);
 
                 requestString = String.format(
                         "%s %s?%s, Params: %s",
                         request.getMethod(),
                         request.getRequestURI(),
-                        request.getQueryString(),
-                        paramsJson
+                        maskedQueryString,
+                        bodyString
                 );
             } else {
                 requestString = "N/A";
@@ -114,11 +144,35 @@ public class HttpLoggingAspect {
                 log.error("Exception during API execution: {}", exception.getMessage(), exception);
                 responseString = "Exception: " + exception.getMessage();
             } else {
+                Object loggableReturn = returnObj;
+                // 민감 컬럼 마스킹
+                if (returnObj != null && !excludeColumns.isEmpty()) {
+                    if (returnObj instanceof Map<?, ?> map) {
+                        Map<String, Object> maskedMap = new HashMap<>((Map<String, Object>) map);
+                        excludeColumns.forEach(key -> {
+                            if (maskedMap.containsKey(key)) {
+                                maskedMap.put(key, "***"); // 제거 대신 마스킹
+                            }
+                        });
+                        loggableReturn = maskedMap;
+                    } else {
+                        // DTO일 경우 ObjectNode로 변환 후 필드 마스킹
+                        ObjectNode node = objectMapper.valueToTree(returnObj);
+                        excludeColumns.forEach(key -> {
+                            if (node.has(key)) {
+                                node.put(key, "***"); // 제거 대신 마스킹
+                            }
+                        });
+                        loggableReturn = node;
+                    }
+                }
+
+                // JSON 직렬화만 try/catch
                 try {
-                    responseString = returnObj != null ? objectMapper.writeValueAsString(returnObj) : null;
+                    responseString = loggableReturn != null ? objectMapper.writeValueAsString(loggableReturn) : null;
                 } catch (JsonProcessingException e) {
                     log.error("Failed to convert response to JSON", e);
-                    responseString = returnObj != null ? returnObj.toString() : null;
+                    responseString = loggableReturn != null ? loggableReturn.toString() : null;
                 }
             }
 
@@ -133,6 +187,45 @@ public class HttpLoggingAspect {
         }
     }
 
+
+    private String maskAndSerializeParams(Map<String, Object> paramMap, Set<String> excludeColumns) {
+        if (paramMap == null || paramMap.isEmpty()) {
+            return "{}";
+        }
+
+        // DTO 내부 필드 마스킹
+        for (Map.Entry<String, Object> entry : paramMap.entrySet()) {
+            Object value = entry.getValue();
+            if (value == null) continue;
+
+            if (value instanceof Map<?, ?>) {
+                // Map이면 key 기준 마스킹
+                Map<String, Object> map = (Map<String, Object>) value; // 캐스팅
+                excludeColumns.forEach(k -> {
+                    if (map.containsKey(k)) map.put(k, "***");
+                });
+            } else {
+                // DTO일 경우 reflection으로 필드 마스킹
+                excludeColumns.forEach(fieldName -> {
+                    try {
+                        Field field = value.getClass().getDeclaredField(fieldName);
+                        field.setAccessible(true);
+                        field.set(value, "***");
+                    } catch (NoSuchFieldException | IllegalAccessException ignored) {
+                        // 필드가 없으면 무시
+                    }
+                });
+            }
+        }
+
+        // JSON 문자열로 직렬화
+        try {
+            return new ObjectMapper().writeValueAsString(paramMap);
+        } catch (JsonProcessingException e) {
+            e.printStackTrace();
+            return paramMap.toString(); // 직렬화 실패 시 fallback
+        }
+    }
 
 
 

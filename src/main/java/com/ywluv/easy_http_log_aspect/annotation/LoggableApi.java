@@ -7,4 +7,5 @@ import java.lang.annotation.*;
 @Documented
 public @interface LoggableApi {
     boolean value() default true;
+    String[] excludeColumns() default {};
 }
