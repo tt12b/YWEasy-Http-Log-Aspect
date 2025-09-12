@@ -18,6 +18,7 @@ import org.aspectj.lang.reflect.CodeSignature;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -168,8 +169,23 @@ public class HttpLoggingAspect {
                 }
 
                 // JSON 직렬화만 try/catch
+//                try {
+//                    responseString = loggableReturn != null ? objectMapper.writeValueAsString(loggableReturn) : null;
+//                } catch (JsonProcessingException e) {
+//                    log.error("Failed to convert response to JSON", e);
+//                    responseString = loggableReturn != null ? loggableReturn.toString() : null;
+//                }
                 try {
-                    responseString = loggableReturn != null ? objectMapper.writeValueAsString(loggableReturn) : null;
+                    if (loggableReturn instanceof org.springframework.core.io.Resource) {
+                        // InputStreamResource, ByteArrayResource 등 파일 응답은 JSON 변환 X
+                        responseString = "Resource response: " + loggableReturn.getClass().getSimpleName();
+                    } else if (loggableReturn instanceof ResponseEntity<?> entity
+                            && entity.getBody() instanceof org.springframework.core.io.Resource) {
+                        // ResponseEntity<Resource> 인 경우도 별도 처리
+                        responseString = "ResponseEntity<Resource> response: " + entity.getBody().getClass().getSimpleName();
+                    } else {
+                        responseString = loggableReturn != null ? objectMapper.writeValueAsString(loggableReturn) : null;
+                    }
                 } catch (JsonProcessingException e) {
                     log.error("Failed to convert response to JSON", e);
                     responseString = loggableReturn != null ? loggableReturn.toString() : null;
