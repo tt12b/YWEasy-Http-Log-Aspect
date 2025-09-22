@@ -22,7 +22,7 @@ tasks.bootJar {
 }
 
 group = 'org.ywluv'
-version = '0.0.3'
+version = '0.0.4'
 
 tasks.jar {
     enabled = true
